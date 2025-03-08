@@ -2,6 +2,19 @@ import torch
 import torch.nn as nn # neural network. This import is necessary for defining the model
 from torch.nn import functional as F # This import is necessary for using activation functions
 
+#hyperparameters
+# -------------------------------
+max_iters = 3000 # This is the maximum number of iterations that the model is going to train for
+eval_interval = 300 # This is the interval at which the model is going to evaluate the loss
+batch_size = 32 # This is the number of sequences that the model is going to train on at a time
+block_size = 8 # This is the maximum sequence length that the model can train on at a time
+learning_rate = 1e-2 # This is the learning rate of the model
+device = 'cuda' if torch.cuda.is_available() else 'cpu' # This is going to check if a GPU is available and set the device to 'cuda' if it is and 'cpu' if it is not
+eval_iters = 200 # This is the number of iterations that the model is going to evaluate the loss for
+# -------------------------------
+
+torch.manual_seed(1337) # Set the seed for reproducibility
+
 with open('input.txt', 'r', encoding='utf-8') as f: # Open the input file in read mode (r is read mode) with proper encoding
     text = f.read() # Read the file and store it in the variable text
     
@@ -32,12 +45,6 @@ val_data = data[n:] # Get the last 10% of the data and store it in the variable 
 
 # What this is going to do is help create a model that takes in 90% of the data and uses it to learn patterns to then predict the last 10% of the data
 
-torch.manual_seed(1337) # Set the seed for reproducibility
-block_size = 8 # This reprenents the maximum sequence length that the model can train on at a time to make the predictions
-batch_size = 4 # This represents the number of sequences that the model will train on at a time
-
-# train_data[:block_size+1] # This is going to grab the first 9 characters of the training data
-
 # this function is going to generate a small batch of data of inputs x and targets y
 def get_batch(split):
     # generate a small batch of data of inputs x and targets y
@@ -49,18 +56,35 @@ def get_batch(split):
     ix = torch.randint(len(data) - block_size, (batch_size,)) # Get a random integer between 0 and the length of the data minus the block size. This makes sure that the model doesn't try to predict something that is out of bounds
     x = torch.stack([data[i:i+block_size] for i in ix]) # Get a random sequence of characters of length block_size and store it in the variable x. First block size characters starting at i
     y = torch.stack([data[i+1:i+block_size+1] for i in ix]) # Get the next sequence of characters of length block_size and store it in the variable y. offset of 1 from x
+    x,y = x.to(device), y.to(device) # Set the device of x and y to the device
     return x, y
 
 # we train up from 1 to the length of the block size
 
-xb, yb = get_batch('train') # Get a batch of training data and store it in the variables xb and yb
-# xb is the input and yb is the target
+# xb, yb = get_batch('train') # Get a batch of training data and store it in the variables xb and yb
+# # xb is the input and yb is the target
 
-for b in range(batch_size): #batch dimension
-    for t in range(block_size): #time dimension
-        context = xb[b,:t+1] # Get the context of the input
-        target = yb[b,t] # Get the target of the input
-        print(f"when input is {context.tolist()} the target is {target}") # Print the context and the target
+# for b in range(batch_size): #batch dimension
+#     for t in range(block_size): #time dimension
+#         context = xb[b,:t+1] # Get the context of the input
+#         target = yb[b,t] # Get the target of the input
+#         print(f"when input is {context.tolist()} the target is {target}") # Print the context and the target
+
+
+#Function to estimate Loss
+@torch.no_grad() # This is a decorator that disables the gradient computation. This is useful when you are not training the model
+def estimate_loss():
+    out = {}
+    model.eval() # Set the model to evaluation mode
+    for split in ['train', 'val']: # For each split in the list ['train', 'val']
+        losses = torch.zeros(eval_iters) # Create a tensor of zeros of size eval_iters and store it in the variable losses
+        for k in range(eval_iters):
+            X, Y = get_batch(split) # Get a batch of data and store it in the variables X and Y
+            logts, loss = model(X, Y) # Get the output of the model and store it in the variables logts and loss
+            losses[k] = loss.item() # Set the kth element of losses to the loss
+        out[split] = losses.mean() # get the average loss for the split
+    model.train() # Set the model to training mode
+    return out
 
 
 # lets now feed this into a neural network
@@ -105,19 +129,26 @@ class BigramLanguageModel(nn.Module):
             idx = torch.cat((idx, idx_next), dim=1) # (B, T+1). What this does is that it concatenates the index with the next index
         return idx
 
-m = BigramLanguageModel(vocab_size) # Create an instance of the BigramLanguageModel and store it in the variable m
-logits, loss = m(xb, yb) # Get the output of the model and store it in the variable out
-print(logits.shape) # Print the shape of the output
-print(loss)
+model = BigramLanguageModel(vocab_size) # Create an instance of the BigramLanguageModel and store it in the variable m
+m = model.to(device) # Set the device of the model to the device
+
+#logits, loss = m(xb, yb) # Get the output of the model and store it in the variable out
+#print(logits.shape) # Print the shape of the output
+#print(loss)
 
  # Create a tensor of zeros of size 1x1 and store it in the variable idx
-print(decode(m.generate(idx = torch.zeros((1, 1), dtype=torch.long),max_new_tokens=100)[0].tolist())) # Generate a sequence of characters and print it
+#print(decode(m.generate(idx = torch.zeros((1, 1), dtype=torch.long),max_new_tokens=100)[0].tolist())) # Generate a sequence of characters and print it
 
 # create a PyTorch optimizer
-optimizer = torch.optim.AdamW(m.parameters(), lr=le-3) # Create an instance of the Adam optimizer and store it in the variable optimizer
+optimizer = torch.optim.AdamW(m.parameters(), lr=learning_rate) # Create an instance of the Adam optimizer and store it in the variable optimizer
 
-batch_size = 32 # Set the batch size to 32
-for steps in range(100):
+#training loop
+for iter in range(max_iters):
+    
+    if iter % eval_interval == 0:
+        losses = estimate_loss()
+        print(f"iter {iter}, train loss: {losses['train']:.4f}, val loss: {losses['val']:.4f}") 
+    
     # sample a batch of data
     xb, yb = get_batch('train') # Get a batch of training data and store it in the variables xb and yb
     
@@ -127,5 +158,8 @@ for steps in range(100):
     loss.backward() # Backpropagate the loss
     optimizer.step() # Update the weights of the model
     
-    print(loss.item()) # Print the loss
-    
+    #print(loss.item()) # Print the loss
+context = torch.zeros((1, 1), dtype=torch.long, device=device) # Create a tensor of zeros of size 1x1 and store it in the variable context    
+print(decode(m.generate(context, max_new_tokens=500)[0].tolist())) # Generate a sequence of characters and print it
+
+#next we need the tokens to start talking to each other to build a better context
