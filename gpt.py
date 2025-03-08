@@ -106,7 +106,7 @@ class Head(nn.Module):
         k = self.key(x) # (B, T, 16)
         q = self.query(x) # (B, T, 16)
         # compute attention scores ("affinities")
-        wei = q @ k.transpose(-2, -1) * C**-0.5 # (B, T, 16) @ (B, 16, T) -> (B, T, T) 
+        wei = q @ k.transpose(-2, -1) * k.shape[-1]**0.5 # (B, T, 16) @ (B, 16, T) -> (B, T, T) 
         wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf')) # (B, T, T)
         wei = F.softmax(wei, dim=1) # (B, T, T)
         wei = self.dropout(wei) # (B, T, T)
@@ -121,7 +121,7 @@ class MultiHeadAttention(nn.Module):
     def __init__(self, num_heads, head_size):
         super().__init__()
         self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
-        self.proj = nn.Linear(n_embd, n_embd)
+        self.proj = nn.Linear(head_size * num_heads, n_embd)
         self.dropout = nn.Dropout(dropout)
         
     def forward(self, x):
@@ -134,9 +134,9 @@ class FeedForward(nn.Module):
     def __init__(self, n_embd):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(n_embd, n_embd),
+            nn.Linear(n_embd, 4* n_embd),
             nn.ReLU(),
-            nn.Linear(n_embd, n_embd),
+            nn.Linear(4 * n_embd, n_embd),
             nn.Dropout(dropout)
         )    
     def forward(self, x):
@@ -168,17 +168,21 @@ class BigramLanguageModel(nn.Module):
         # the embedding table is a matrix of size vocab_size by vocab_size where each row is the embedding of a token
         
         self.position_embedding_table = nn.Embedding(block_size, n_embd) # This is going to create an embedding table that is going to be used to store the embeddings of the positions
-        self.blocks = nn.Sequential(
-            Block(n_embd, n_head=4),
-            Block(n_embd, n_head=4),
-            Block(n_embd, n_head=4),
-            nn.LayerNorm(n_embd)
-        )
+        self.blocks = nn.Sequential(*[Block(n_embd, n_head=n_head) for _ in range(n_layer)]) # This is going to create a sequence of transformer blocks that is going to be used to perform the transformer operations
         self.ln_f = nn.LayerNorm(n_embd) # This is going to create a layer norm layer that is going to be used to normalize the output of the model
         # self.sa_heads = MultiHeadAttention(4, n_embd//4) # This is going to create a multi-head attention layer that is going to be used to perform self-attention
         # self.ffwd = FeedForward(n_embd) # This is going to create a feedforward layer that is going to be used to perform feedforward operations
         self.lm_head = nn.Linear(n_embd, vocab_size) # This is going to create a linear layer that is going to be used to predict the next token
         
+        self.apply(self.init_weights) # This is going to initialize the weights of the model
+        
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
         
     def forward(self, idx, targets=None):
         
@@ -189,6 +193,7 @@ class BigramLanguageModel(nn.Module):
         pos_emb = self.position_embedding_table(torch.arange(T, device= device)) # (T, C). Get the logits from the position embedding table
         x = token_emb + pos_emb # (B, T, C). Add the token embedding and the position embedding
         x = self.blocks(x) # (B, T, C). Perform the transformer block
+        x = self.ln_f(x) # (B, T, C). Perform layer normalization
         # x = self.sa_heads(x) # (B, T, C). Perform self-attention
         # x = self.ffwd(x) # (B, T, C). Perform feedforward operations
         logits = self.lm_head(x) # Batch, Time, Vocab_size
@@ -242,7 +247,7 @@ optimizer = torch.optim.AdamW(m.parameters(), lr=learning_rate) # Create an inst
 #training loop
 for iter in range(max_iters):
     
-    if iter % eval_interval == 0:
+    if iter % eval_interval == 0 or iter ==max_iters - 1:
         losses = estimate_loss()
         print(f"iter {iter}, train loss: {losses['train']:.4f}, val loss: {losses['val']:.4f}") 
     
